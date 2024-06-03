@@ -18,8 +18,12 @@ package controller
 
 import (
 	"context"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -47,11 +51,41 @@ type ScalerReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.3/pkg/reconcile
 func (r *ScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
-
+	logger := log.FromContext(ctx, "Request.Namespace:", req.Namespace, "Request.Name:", req.Name)
+	logger.Info("Reconcile called")
 	// TODO(user): your logic here
+	scaler := &apiv1alpha1.Scaler{}
+	err := r.Get(ctx, req.NamespacedName, scaler)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			logger.Info("Resource not found. Error ignored as the resource must have been deleted.")
+			return ctrl.Result{}, nil
+		}
 
-	return ctrl.Result{}, nil
+		// If it's another error, we return it
+		logger.Error(err, "Error while retrieving MyProxy instance")
+		return ctrl.Result{}, err
+	}
+	startTime := scaler.Spec.Start
+	endTime := scaler.Spec.End
+	replicas := scaler.Spec.Replicas
+
+	currentHour := time.Now().UTC().Hour()
+	if currentHour >= startTime && currentHour <= endTime {
+		for _, deploy := range scaler.Spec.Deployments {
+			deployment := &appsv1.Deployment{}
+			err = r.Get(ctx, types.NamespacedName{Namespace: deploy.Namespace, Name: deploy.Name}, deployment)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if deployment.Spec.Replicas != &replicas {
+				deployment.Spec.Replicas = &replicas
+				r.Update(ctx, deployment)
+			}
+		}
+	}
+
+	return ctrl.Result{RequeueAfter: time.Duration(30 * time.Second)}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
